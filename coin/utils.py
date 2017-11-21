@@ -6,7 +6,9 @@ __author__ = "nil.gradisnik@gmail.com"
 
 currency = {
     'usd': '$',
-    'eur': '€'
+    'eur': '€',
+    'btc': '฿',
+    'gbp': '£'
 }
 
 category = {
@@ -14,7 +16,8 @@ category = {
     'high': 'High:\t\t',
     'low': 'Low:\t\t',
     'ask': 'Ask:\t\t',
-    'volume': 'Volume:\t'
+    'volume': 'Volume:\t',
+    'first': 'First:\t\t'
 }
 
 

@@ -8,6 +8,7 @@ __author__ = "nil.gradisnik@gmail.com"
 from gi.repository import GLib
 
 import requests
+import logging
 
 import utils
 from exchange.error import Error
@@ -17,43 +18,63 @@ CONFIG = {
   'ticker': 'https://api.kraken.com/0/public/Ticker',
   'asset_pairs': [
     {
-      'code': 'XXBTZUSD',
+      'isocode': 'XXBTZUSD',
+      'pair': 'XXBTZUSD',
       'name': 'BTC to USD',
       'currency': utils.currency['usd']
     },
     {
-      'code': 'XXBTZEUR',
+      'isocode': 'XXBTZEUR',
+      'pair': 'XXBTZEUR',
       'name': 'BTC to EUR',
       'currency': utils.currency['eur']
     },
     {
-      'code': 'XLTCZUSD',
+      'isocode': 'XXLTZUSD',
+      'pair': 'XLTCZUSD',
       'name': 'LTC to USD',
       'currency': utils.currency['usd']
     },
     {
-      'code': 'XLTCZEUR',
+      'isocode': 'XXLTZEUR',
+      'pair': 'XLTCZEUR',
       'name': 'LTC to EUR',
       'currency': utils.currency['eur']
     },
     {
-      'code': 'XETHZUSD',
+      'isocode': 'XETHZUSD',
+      'pair': 'XETHZUSD',
       'name': 'ETH to USD',
       'currency': utils.currency['usd']
     },
     {
-      'code': 'XETHZEUR',
+      'isocode': 'XXETZEUR',
+      'pair': 'XETHZEUR',
       'name': 'ETH to EUR',
       'currency': utils.currency['eur']
     },
     {
-      'code': 'XXLMZUSD',
-      'name': 'XLM to USD',
+      'isocode': 'XXLTZUSD',
+      'pair': 'XLTCZUSD',
+      'name': 'LTC to USD',
       'currency': utils.currency['usd']
     },
     {
-      'code': 'XXLMZEUR',
-      'name': 'XLM to EUR',
+      'isocode': 'XXLTZEUR',
+      'pair': 'XLTCZEUR',
+      'name': 'LTC to EUR',
+      'currency': utils.currency['eur']
+    },
+    {
+      'isocode': 'XXBCZEUR',
+      'pair': 'BCHEUR',
+      'name': 'BCH to EUR',
+      'currency': utils.currency['eur']
+    },
+    {
+      'isocode': 'XXRPZEUR',
+      'pair': 'XXRPZEUR',
+      'name': 'XRP to EUR',
       'currency': utils.currency['eur']
     }
   ]
@@ -80,8 +101,10 @@ class Kraken:
   def check_price(self):
     self.asset_pair = self.indicator.active_asset_pair
 
+    self.pair = [item['pair'] for item in CONFIG['asset_pairs'] if item['isocode'] == self.asset_pair][0]
+
     try:
-      res = requests.get(CONFIG['ticker'] + '?pair=' + self.asset_pair)
+      res = requests.get(CONFIG['ticker'] + '?pair=' + self.pair)
       data = res.json()
       if data['error']:
         self._handle_error(data['error'])
@@ -89,7 +112,7 @@ class Kraken:
         self._parse_result(data['result'])
 
     except Exception as e:
-      print(e)
+      logging.info('Error: ' + str(e))
       self.error.increment()
 
     return self.error.is_ok()
@@ -97,20 +120,18 @@ class Kraken:
   def _parse_result(self, data):
     self.error.clear()
 
-    asset = data[self.asset_pair]
-    currency = [item['currency'] for item in CONFIG['asset_pairs'] if item['code'] == self.asset_pair][0]
+    asset = data[self.pair]
+    currency = [item['currency'] for item in CONFIG['asset_pairs'] if item['isocode'] == self.asset_pair][0]
+    coin = [item['name'] for item in CONFIG['asset_pairs'] if item['isocode'] == self.asset_pair][0]
 
-    label = currency + asset['c'][0]
+    label = currency + utils.decimal_round(asset['c'][0])
 
     bid = utils.category['bid'] + currency + utils.decimal_round(asset['b'][0])
     high = utils.category['high'] + currency + utils.decimal_round(asset['h'][0])
     low = utils.category['low'] + currency + utils.decimal_round(asset['l'][0])
     ask = utils.category['ask'] + currency + utils.decimal_round(asset['a'][0])
 
-    # if self.alarm:
-    #   self.alarm.check(float(data["last"]))
-
     self.indicator.set_data(label, bid, high, low, ask)
 
   def _handle_error(self, error):
-    print("Kraken API error: " + error[0])
+    logging.info("Kraken API error: " + error[0])

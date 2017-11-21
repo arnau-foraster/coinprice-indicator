@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-
 # Ubuntu App indicator
 # https://unity.ubuntu.com/projects/appindicators/
 
-from gi.repository import Gtk, GdkPixbuf
+import gi, logging, threading
+logging.basicConfig(level=logging.INFO)
+
+from gi.repository import Gtk, GdkPixbuf, GObject
 
 try:
     from gi.repository import AppIndicator3 as AppIndicator
@@ -11,14 +13,15 @@ except ImportError:
     from gi.repository import AppIndicator
 
 import utils
+
+from exchange.kraken import Kraken
+from exchange.bitstamp import Bitstamp
+from exchange.bityep import BitYep
+from exchange.gdax import Gdax
 from settings import Settings
-
 from exchange.kraken import CONFIG as KrakenConfig
-from exchange.btce import CONFIG as BtcEConfig
-
-__author__ = "nil.gradisnik@gmail.com"
-
-ICON_NAME = "gtk-info"
+from exchange.bityep import CONFIG as BitYepConfig
+from exchange.gdax import CONFIG as GdaxConfig
 
 REFRESH_TIMES = [  # seconds
     '3',
@@ -30,40 +33,61 @@ REFRESH_TIMES = [  # seconds
 
 CURRENCY_SHOW = [
     'kraken',
-    'btce'
+    'bityep',
+    'gdax'
 ]
 
 CURRENCIES = {
     'kraken': KrakenConfig['asset_pairs'],
-    'btce': BtcEConfig['asset_pairs']
+    'bityep': BitYepConfig['asset_pairs'],
+    'gdax': GdaxConfig['asset_pairs']
 }
 
 
-class Indicator(object):
-    def __init__(self, config):
-        self.config = config
+class Indicator():
+    instances = []
 
-        self.settings = Settings()
+    def __init__(self, coin, counter, config, settings=None):
+        Indicator.instances.append(self)
+        self.counter = counter
+
+        self.coin = coin
+
+        self.config = config
+        self.settings = Settings(settings)
         self.refresh_frequency = self.settings.refresh()
         self.active_exchange = self.settings.exchange()
+        
+        self.exchanges = [
+            {
+                'code': 'kraken',
+                'name': 'Kraken',
+                'instance': Kraken(self.config, self)
+            },
+            {
+                'code': 'bitstamp',
+                'name': 'Bitstamp',
+                'instance': Bitstamp(self.config, self)
+            },
+            {
+                'code': 'bityep',
+                'name': 'BitYep',
+                'instance': BitYep(self.config, self)
+            },
+            {
+                'code': 'gdax',
+                'name': 'Gdax',
+                'instance': Gdax(self.config, self)
+            }
+        ]
 
-        self.indicator = AppIndicator.Indicator.new(self.config['app']['name'], ICON_NAME,
-                                                    AppIndicator.IndicatorCategory.APPLICATION_STATUS)
+    def start(self):
+        icon = self.config['project_root'] + '/resources/icon_32px.png'
+        self.indicator = AppIndicator.Indicator.new(self.config['app']['name'] + "_" + str(len(self.instances)), icon, AppIndicator.IndicatorCategory.APPLICATION_STATUS)
         self.indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
-        self.indicator.set_label("syncing", "$888.88")
-
-        self.logo_124px = GdkPixbuf.Pixbuf.new_from_file(self.config['project_root'] + '/resources/logo_124px.png')
-        # self.logo_124px.saturate_and_pixelate(self.logo_124px, 1, True)
-
-        self.exchanges = None
-
-    def init(self, exchanges):
-        self.exchanges = exchanges
-
+        self.indicator.set_label('loading', 'loading')
         self.indicator.set_menu(self._menu())
         self._start_exchange()
-
-        Gtk.main()
 
     def set_data(self, label, bid, high, low, ask, volume=None):
         self.indicator.set_label(label, "$888.88")
@@ -83,9 +107,11 @@ class Indicator(object):
         ap = ''
         if self.active_exchange in CURRENCY_SHOW:
             self.active_asset_pair = self.settings.assetpair(self.active_exchange)
-            ap = "Asset pair: " + self.active_asset_pair
+            ap = self.active_asset_pair
 
-        print("Using [" + self.active_exchange + "] exchange. (" + str(self.refresh_frequency) + "s refresh) " + ap)
+        home_currency = self.active_asset_pair.lower()[1:4]
+        self.indicator.set_icon(self.config['project_root'] + '/resources/' + home_currency + '.png')
+        logging.info("loading " + ap + " from " + self.active_exchange + " (" + str(self.refresh_frequency) + "s)")
 
         self._stop_exchanges()
 
@@ -94,13 +120,12 @@ class Indicator(object):
             exchange[0].check_price()
             exchange[0].start()
         else:
-            print("Error starting instance [" + self.active_exchange + "]")
+            logging.info("Error loading [" + self.active_exchange + "]")
 
     def _stop_exchanges(self):
         for exchange in self.exchanges:
             exchange['instance'].stop()
 
-    # UI stuff
     def _menu(self):
         menu = Gtk.Menu()
 
@@ -110,11 +135,8 @@ class Indicator(object):
         self.ask_item = Gtk.MenuItem(utils.category['ask'])
         self.volume_item = Gtk.MenuItem(utils.category['volume'])
 
-        about_item = Gtk.MenuItem("About")
-        about_item.connect("activate", self._about)
-
-        quit_item = Gtk.MenuItem("Quit")
-        quit_item.connect("activate", self._quit)
+        remove_item = Gtk.MenuItem("Remove Ticker")
+        remove_item.connect("activate", self._remove)
 
         refresh_item = Gtk.MenuItem("Refresh")
         refresh_item.set_submenu(self._menu_refresh())
@@ -131,8 +153,7 @@ class Indicator(object):
         menu.append(refresh_item)
         menu.append(exchange_item)
         menu.append(Gtk.SeparatorMenuItem())
-        menu.append(about_item)
-        menu.append(quit_item)
+        menu.append(remove_item)
 
         menu.show_all()
 
@@ -181,19 +202,28 @@ class Indicator(object):
         return exchange
 
     def _menu_exchange_change(self, widget):
+
         if widget.get_active():
             self.active_exchange = widget.get_name()
-            self.settings.exchange(self.active_exchange)
+
+            for assetpair in CURRENCIES[self.active_exchange]:
+                if assetpair['isocode'] == self.active_asset_pair:
+                    active_asset_pair = self.active_asset_pair
+                    break
+                else:
+                    active_asset_pair = CURRENCIES[self.active_exchange][0]['isocode']
+
+            self.settings = Settings(self.active_exchange + ':' + active_asset_pair + ':' + str(self.refresh_frequency))
 
             self._menu_currency_visible()
 
             self._start_exchange()
 
     def _menu_currency(self, exchange_menu):
-        self.currenct_separator = Gtk.SeparatorMenuItem()
+        self.currency_separator = Gtk.SeparatorMenuItem()
         self.currency_menu = Gtk.MenuItem("Currency")
 
-        exchange_menu.append(self.currenct_separator)
+        exchange_menu.append(self.currency_separator)
         exchange_menu.append(self.currency_menu)
 
         if self.active_exchange in CURRENCIES:
@@ -201,16 +231,17 @@ class Indicator(object):
 
     def _menu_asset_pairs(self):
         asset_pairs = Gtk.Menu()
+
         self.active_asset_pair = self.settings.assetpair(self.active_exchange)
 
         group = []
         for asset in CURRENCIES[self.active_exchange]:
             item = Gtk.RadioMenuItem.new_with_label(group, asset['name'])
-            item.set_name(asset['code'])
+            item.set_name(asset['isocode'])
             group.append(item)
             asset_pairs.append(item)
 
-            if self.active_asset_pair == asset['code']:
+            if self.active_asset_pair == asset['isocode']:
                 item.set_active(True)
 
             item.connect('activate', self._menu_asset_pairs_change)
@@ -220,33 +251,24 @@ class Indicator(object):
     def _menu_asset_pairs_change(self, widget):
         if widget.get_active():
             self.active_asset_pair = widget.get_name()
-            self.settings.assetpair(self.active_exchange, self.active_asset_pair)
+            self.settings = Settings(self.active_exchange + ':' + self.active_asset_pair + ':' + str(self.refresh_frequency))
 
             self._start_exchange()
 
     def _menu_currency_visible(self):
         if self.active_exchange in CURRENCY_SHOW:
-            self.currenct_separator.show()
+            self.currency_separator.show()
             self.currency_menu.set_submenu(self._menu_asset_pairs())
             self.currency_menu.show_all()
         else:
-            self.currenct_separator.hide()
+            self.currency_separator.hide()
             self.currency_menu.hide()
 
-    def _about(self, widget):
-        about = Gtk.AboutDialog()
-        about.set_program_name(self.config['app']['name'])
-        about.set_comments(self.config['app']['description'])
-        about.set_copyright(self.config['author']['copyright'])
-        about.set_version(self.config['app']['version'])
-        about.set_website(self.config['app']['url'])
-        about.set_authors([self.config['author']['name'] + ' <' + self.config['author']['email'] + '>'])
-        about.set_artists([self.config['artist']['name'] + ' <' + self.config['artist']['email'] + '>'])
-        about.set_license_type(Gtk.License.MIT_X11)
-        about.set_logo(self.logo_124px)
-        res = about.run()
-        if res == -4 or -6:  # close events
-            about.destroy()
-
-    def _quit(self, widget):
-        Gtk.main_quit()
+    def _remove(self, widget):
+        if len(self.instances) == 1:
+            Gtk.main_quit()
+        else:
+            self.instances.remove(self)
+            self._stop_exchanges()
+            del self.indicator
+            logging.info("Indicator removed")
